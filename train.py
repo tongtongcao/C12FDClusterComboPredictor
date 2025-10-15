@@ -36,7 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="GNN Training and Inference")
     parser.add_argument("--device", type=str, choices=["cpu", "gpu", "auto"], default="auto")
     parser.add_argument("inputs", type=str, nargs="*", default=["clusters_sector1.csv"])
-    parser.add_argument("--max_epochs", type=int, default=20)
+    parser.add_argument("--max_epochs", type=int, default=50)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--outdir", type=str, default="outputs")
     parser.add_argument("--end_name", type=str, default="")
@@ -231,6 +231,7 @@ def main() -> None:
         plotter.plotTrainLoss(loss_tracker)
 
         # TorchScript save
+        model.to("cpu")
         wrapper = EdgeClassifierWrapper(model)
         wrapper.eval()
 
