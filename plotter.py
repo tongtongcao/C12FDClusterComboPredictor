@@ -75,14 +75,18 @@ class Plotter:
         """
         Plot predicted tracks with avgWire vs superlayer.
 
+        Supports tracks given as node indices or cluster_id. If cluster_id is used,
+        data.cluster_id must exist to map back to node indices.
+
         Parameters:
         -----------
         data : object
             Data object containing node features `x` and optionally `superlayer`.
+            If using cluster_id, data.cluster_id must exist.
         tracks : list of list
-            List of predicted tracks, each a list of node indices.
+            List of predicted tracks, each a list of node indices or cluster_ids.
         noise_hits : list, optional
-            List of noise node indices.
+            List of noise node indices or cluster_ids.
         title : str, optional
             Plot title.
         save_path : str, optional
@@ -94,12 +98,44 @@ class Plotter:
             superlayer = data.x[:, 1:7].argmax(dim=1).cpu().numpy() + 1
         else:
             superlayer = data.superlayer.cpu().numpy()
+
+        # -----------------------------
+        # 如果是 cluster_id，映射回节点索引
+        # -----------------------------
+        cluster_id_to_idx = None
+        if hasattr(data, "cluster_id"):
+            cluster_id_to_idx = {cid.item(): i for i, cid in enumerate(data.cluster_id)}
+
+        def map_track(tr):
+            if cluster_id_to_idx is not None:
+                mapped = []
+                for cid in tr:
+                    if cid in cluster_id_to_idx:
+                        mapped.append(cluster_id_to_idx[cid])
+                    else:
+                        print(f"Warning: cluster_id {cid} not found in event_data.cluster_id")
+                return mapped
+            return tr
+
+        tracks_mapped = [map_track(tr) for tr in tracks]
+        if noise_hits is not None:
+            noise_hits_mapped = map_track(noise_hits)
+        else:
+            noise_hits_mapped = None
+
         colors = plt.cm.get_cmap("tab10", 10)
-        for t_idx, track in enumerate(tracks):
-            plt.scatter(superlayer[track], avgWire[track], label=f"Track {t_idx + 1}", s=50, color=colors(t_idx % 10))
-            plt.plot(superlayer[track], avgWire[track], color=colors(t_idx % 10), linestyle='--', alpha=0.7)
-        if noise_hits is not None and len(noise_hits) > 0:
-            plt.scatter(superlayer[noise_hits], avgWire[noise_hits], label="Noise", s=50, color="gray", alpha=0.6)
+        for t_idx, track in enumerate(tracks_mapped):
+            if len(track) == 0:
+                continue
+            plt.scatter(superlayer[track], avgWire[track], label=f"Track {t_idx + 1}",
+                        s=50, color=colors(t_idx % 10))
+            plt.plot(superlayer[track], avgWire[track], color=colors(t_idx % 10),
+                     linestyle='--', alpha=0.7)
+
+        if noise_hits_mapped is not None and len(noise_hits_mapped) > 0:
+            plt.scatter(superlayer[noise_hits_mapped], avgWire[noise_hits_mapped],
+                        label="Noise", s=50, color="gray", alpha=0.6)
+
         plt.xlabel("Superlayer")
         plt.ylabel("avgWire")
         plt.title(title)
@@ -247,8 +283,8 @@ class Plotter:
 
         if plot:
             plt.figure(figsize=(8, 6))
-            plt.plot(thresholds, tpr_list, label="TPR (Recall)", marker='o')
-            plt.plot(thresholds, tnr_list, label="TNR (Specificity)", marker='s')
+            plt.plot(thresholds, tpr_list, label="TPR", marker='o')
+            plt.plot(thresholds, tnr_list, label="TNR", marker='s')
             plt.xlabel("Threshold")
             plt.ylabel("Rate")
             plt.title("TPR and TNR vs Threshold")
@@ -260,161 +296,3 @@ class Plotter:
             plt.close()
 
         return tpr_list, tnr_list, thresholds
-
-    # -----------------------------
-    # Track metrics
-    # -----------------------------
-    def compute_track_metrics(self, tracks_pred, tracks_true):
-        """
-        Compute track Purity (Precision) and Efficiency (Recall).
-
-        Parameters:
-        -----------
-        tracks_pred : list of list
-            Predicted tracks, each a list of node indices.
-        tracks_true : list of list
-            True tracks, each a list of node indices.
-
-        Returns:
-        --------
-        purity : float
-            Mean precision of predicted tracks.
-        efficiency : float
-            Recall (fraction of true hits recovered).
-        """
-        true_hits = set([hit for tr in tracks_true for hit in tr])
-        pred_hits = set([hit for tr in tracks_pred for hit in tr])
-
-        correct_hits = pred_hits & true_hits
-        efficiency = len(correct_hits) / max(len(true_hits), 1)
-
-        purities = []
-        for tr in tracks_pred:
-            tr_set = set(tr)
-            correct = tr_set & true_hits
-            #print(len(tr_set), len(true_hits), len(correct), max(len(tr_set), 1))
-            purities.append(len(correct) / max(len(tr_set), 1))
-        purity = np.mean(purities) if purities else 0.0
-
-        return purity, efficiency
-
-    # -----------------------------
-    # Plot track metrics vs threshold
-    # -----------------------------
-    def plot_track_metrics_vs_threshold(self, track_predictor, val_loader, thresholds=None):
-        """
-        Predict tracks using TrackPredictor and plot Purity and Efficiency vs edge probability threshold.
-
-        Parameters:
-        -----------
-        track_predictor : object
-            TrackPredictor with a .predict_tracks() method and .threshold attribute.
-        val_loader : iterable
-            Validation data loader yielding batches.
-        thresholds : list or np.ndarray, optional
-            Threshold values to evaluate. Default 21 points between 0 and 1.
-        min_track_length : int
-            Only consider tracks with at least this many nodes.
-
-        Returns:
-        --------
-        thresholds : np.ndarray
-            Threshold values used.
-        purity_list : list
-            Mean Purity for each threshold.
-        efficiency_list : list
-            Mean Efficiency for each threshold.
-        """
-        if thresholds is None:
-            thresholds = np.linspace(0, 1, 21)
-
-        purity_list, efficiency_list = [], []
-
-        for thr in thresholds:
-            track_predictor.threshold = thr
-            purities, efficiencies = [], []
-
-            with torch.no_grad():
-                for batch in val_loader:
-                    for event_id in batch.batch.unique():
-                        node_mask = (batch.batch == event_id)
-
-                        # -----------------------------
-                        # 构建 event_data，并保证 track_ids 是列表的列表
-                        # -----------------------------
-                        edge_mask = None
-                        if hasattr(batch, "edge_index"):
-                            edge_mask = node_mask[batch.edge_index[0]] & node_mask[batch.edge_index[1]]
-
-                        # 构造 track_ids，展开可能的嵌套列表
-                        track_ids = []
-                        for tid, m in zip(batch.track_ids, node_mask):
-                            if not m:
-                                continue
-                            if tid is None or tid == -1:
-                                track_ids.append([])
-                            elif isinstance(tid, int):
-                                track_ids.append([tid])
-                            elif isinstance(tid, list):
-                                flat = []
-                                for t in tid:
-                                    if isinstance(t, list):
-                                        flat.extend(t)  # 展开嵌套列表
-                                    else:
-                                        flat.append(t)
-                                track_ids.append(flat)
-                            else:
-                                track_ids.append([])
-
-                        # 构建 event_data
-                        event_data = type(batch)(
-                            x=batch.x[node_mask],
-                            superlayer=batch.superlayer[node_mask],
-                            edge_index=batch.edge_index[:, edge_mask] if edge_mask is not None else None,
-                            edge_label=batch.edge_label[edge_mask] if hasattr(batch,
-                                                                              "edge_label") and edge_mask is not None else None,
-                            edge_attr=batch.edge_attr[edge_mask] if hasattr(batch,
-                                                                            "edge_attr") and edge_mask is not None else None,
-                            track_ids=track_ids
-                        )
-
-                        # -----------------------------
-                        # 预测轨迹
-                        tracks_pred, _ = track_predictor.predict_tracks(event_data)
-
-                        #print(event_data.track_ids)
-                        # -----------------------------
-                        # 构造 tracks_true
-                        tracks_true_dict = {}
-                        for idx, trk_entry in enumerate(event_data.track_ids):
-                            for trk_id in trk_entry:
-                                if trk_id == -1:
-                                    continue
-                                tracks_true_dict.setdefault(int(trk_id), []).append(idx)
-
-                        tracks_true = list(tracks_true_dict.values())
-                        #print(len(tracks_true), tracks_true)
-
-                        purity, efficiency = self.compute_track_metrics(tracks_pred, tracks_true)
-                        purities.append(purity)
-                        efficiencies.append(efficiency)
-
-            purity_list.append(np.mean(purities))
-            efficiency_list.append(np.mean(efficiencies))
-
-        # -----------------------------
-        # 绘图
-        plt.figure(figsize=(8, 6))
-        plt.plot(thresholds, purity_list, label="Purity / Precision", marker='o')
-        plt.plot(thresholds, efficiency_list, label="Efficiency / Recall", marker='s')
-        plt.xlabel("Edge probability threshold")
-        plt.ylabel("Metric")
-        plt.title("Track Purity and Efficiency vs Threshold")
-        plt.grid(True)
-        plt.legend()
-        plt.tight_layout()
-        outname = f"{self.print_dir}/metrics_vs_threshold_{self.end_name}.png"
-        plt.savefig(outname)
-        plt.close()
-
-        return thresholds, purity_list, efficiency_list

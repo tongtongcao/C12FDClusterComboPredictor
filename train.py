@@ -36,7 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="GNN Training and Inference")
     parser.add_argument("--device", type=str, choices=["cpu", "gpu", "auto"], default="auto")
     parser.add_argument("inputs", type=str, nargs="*", default=["clusters_sector1.csv"])
-    parser.add_argument("--max_epochs", type=int, default=100)
+    parser.add_argument("--max_epochs", type=int, default=20)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--outdir", type=str, default="outputs")
     parser.add_argument("--end_name", type=str, default="")
@@ -119,6 +119,7 @@ def extract_event(batch: Batch, event_id: int) -> Data:
     # Extract node features
     x = batch.x[node_mask]
     superlayer = batch.superlayer[node_mask]
+    cluster_id = batch.cluster_id[node_mask]
 
     # Extract track_ids
     track_ids = []
@@ -143,7 +144,8 @@ def extract_event(batch: Batch, event_id: int) -> Data:
         edge_label=edge_label,
         edge_attr=edge_attr,
         superlayer=superlayer,
-        track_ids=track_ids
+        track_ids=track_ids,
+        cluster_id=cluster_id
     )
 
     return event_data
@@ -285,7 +287,6 @@ def main() -> None:
         min_track_length=5,
         use_existing_edges=True
     )
-    #plotter.plot_track_metrics_vs_threshold(predictor, val_loader)
 
     predictor.threshold = best_th
 

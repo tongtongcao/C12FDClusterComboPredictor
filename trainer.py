@@ -69,7 +69,7 @@ def build_graph_from_hits(
     keep_all_noise_prob: float = 0.1,
     avgWire_diff_max=[[12.0, 20.0, 12.0, 38.0, 14.0], [14.0, 18.0, 40.0, 40.0]],
     bidirectional: bool = True
-) -> Data | None:
+):
     """
     Build a PyG Data object from cluster hits.
 
@@ -148,7 +148,8 @@ def build_graph_from_hits(
         edge_label=torch.tensor(edge_labels, dtype=torch.float),
         edge_attr=torch.tensor(edge_feats, dtype=torch.float),
         superlayer=torch.tensor(superlayer, dtype=torch.long),
-        track_ids=[list(s) for s in track_ids_list]
+        track_ids=[list(s) for s in track_ids_list],
+        cluster_id=torch.tensor(clusters["clusterIdx"].values, dtype=torch.long)
     )
 
     return data

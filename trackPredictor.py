@@ -169,7 +169,17 @@ class TrackPredictor:
         # 剩余节点为噪声
         noise_hits = [n for n in range(num_nodes) if n not in used_nodes_set]
 
-        return final_tracks, noise_hits
+        # -----------------------------
+        # 将节点索引映射为 cluster_id
+        # -----------------------------
+        if hasattr(data, "cluster_id"):
+            final_tracks_cluster = [[data.cluster_id[n].item() for n in tr] for tr in final_tracks]
+            noise_hits_cluster = [data.cluster_id[n].item() for n in noise_hits]
+            return final_tracks_cluster, noise_hits_cluster
+
+        else:
+            # 如果没有 cluster_id，就返回原来的节点索引
+            return final_tracks, noise_hits
 
     def predict_tracks_with_max_weight(self, data, threshold=None) -> tuple[list[list[int]], list[int]]:
         """
@@ -177,6 +187,7 @@ class TrackPredictor:
         but applying rules:
         - edges cannot be shared
         - nodes can be shared, but keep only longest track in case of shared nodes
+        Returns tracks and noise as cluster_id.
         """
         if threshold is None:
             threshold = self.threshold
@@ -208,7 +219,7 @@ class TrackPredictor:
             edge_weight_map[(u, v)] = d['weight']
             edge_weight_map[(v, u)] = d['weight']
 
-        # ---------- 按 DFS 搜索轨迹 ----------
+        # ---------- DFS 搜索轨迹 ----------
         all_tracks = []
         sl_to_nodes = {}
         for n in range(num_nodes):
@@ -216,7 +227,6 @@ class TrackPredictor:
 
         def dfs(track, used_sl, used_edges):
             last_node = track[-1]
-            extended = False
             for next_node in adj[last_node]:
                 edge = (last_node, next_node)
                 next_sl = int(superlayer[next_node])
@@ -230,7 +240,6 @@ class TrackPredictor:
                     used_sl.remove(next_sl)
                     used_edges.remove(edge)
                     used_edges.remove((next_node, last_node))
-                    extended = True
             if len(track) >= self.min_track_length:
                 all_tracks.append(track.copy())
 
@@ -247,12 +256,15 @@ class TrackPredictor:
             if shared_nodes == 0:
                 final_tracks.append(tr)
                 used_nodes_set.update(tr)
-            else:
-                # 节点共享，保留最长轨迹（已按长度排序）
-                continue
 
         # ---------- 剩余节点为噪声 ----------
         noise_hits = [n for n in range(num_nodes) if n not in used_nodes_set]
 
-        return final_tracks, noise_hits
+        # ---------- 映射为 cluster_id ----------
+        if hasattr(data, "cluster_id"):
+            final_tracks_cluster = [[data.cluster_id[n].item() for n in tr] for tr in final_tracks]
+            noise_hits_cluster = [data.cluster_id[n].item() for n in noise_hits]
+            return final_tracks_cluster, noise_hits_cluster
+        else:
+            return final_tracks, noise_hits
 
