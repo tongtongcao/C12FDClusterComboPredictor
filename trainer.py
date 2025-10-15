@@ -278,49 +278,47 @@ class EdgeClassifier(pl.LightningModule):
 # -----------------------------
 class EdgeClassifierWrapper(nn.Module):
     """
-    TorchScript 兼容的 EdgeClassifier Wrapper.
+    TorchScript-compatible EdgeClassifier wrapper.
+    Only Tensor fields are used; supports arbitrary node/edge counts.
 
-    接口:
-        forward(x, edge_index, edge_attr=None) -> logits
-
-    输入:
-        x: Tensor [num_nodes, in_channels] 节点特征
-        edge_index: LongTensor [2, num_edges] 边索引
-        edge_attr: Optional Tensor [num_edges, edge_feat_dim] 边特征 (可选)
-
-    输出:
-        logits: Tensor [num_edges]
+    Forward signature:
+        x: [num_nodes, in_channels]
+        edge_index: [2, num_edges]
+        edge_attr: [num_edges, edge_feat_dim] or empty tensor
+    Returns:
+        logits: [num_edges]
     """
 
-    def __init__(self, model: nn.Module):
+    def __init__(self, model: nn.Module, edge_feat_dim: int = 2):
         super().__init__()
-        self.model = model
-        self.dropout = getattr(model, "dropout", 0.1)
-
-        # 假设 model 有 convs (ModuleList), bns (ModuleList), classifier (Sequential)
+        # Copy GNN layers
         self.convs = model.convs
         self.bns = model.bns
         self.classifier = model.classifier
+        self.dropout = getattr(model, "dropout", 0.1)
+        self.edge_feat_dim = edge_feat_dim
 
-    def forward(
-            self,
-            x: Tensor,
-            edge_index: Tensor,
-            edge_attr: Tensor
-    ) -> Tensor:
-        # 如果 edge_attr 为空，则初始化 zeros
+    def forward(self, x: Tensor, edge_index: Tensor, edge_attr: Tensor) -> Tensor:
+        # Ensure edge_attr is tensor
         if edge_attr.numel() == 0:
-            edge_attr = torch.zeros((edge_index.size(1), 2), dtype=x.dtype, device=x.device)
+            edge_attr = torch.zeros((edge_index.size(1), self.edge_feat_dim),
+                                    dtype=x.dtype, device=x.device)
 
-        # conv + bn + relu + dropout
+        # GraphSAGE forward
         for conv, bn in zip(self.convs, self.bns):
             x = conv(x, edge_index)
             x = bn(x)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
 
-        src, dst = edge_index
+        # Gather source and target node embeddings
+        src = edge_index[0]
+        dst = edge_index[1]
+
+        # Concatenate node embeddings and edge features
         edge_feat = torch.cat([x[src], x[dst], edge_attr], dim=1)
+
+        # MLP classifier
         logits = self.classifier(edge_feat).view(-1)
         return logits
 
