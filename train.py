@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num_layers", type=int, default=2)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--dropout", type=float, default=0.1)
-    parser.add_argument("--keep_all_noise_prob", type=float, default=0.1)
+    parser.add_argument("--keep_all_noise_prob", type=float, default=0)
     parser.add_argument("--no_train", action="store_true")
     parser.add_argument("--enable_progress_bar", action="store_true")
     parser.add_argument("--max_plot_events", type=int, default=25,
@@ -274,6 +274,9 @@ def main() -> None:
 
     y_true_all = torch.cat(y_true_all)
     y_pred_all = torch.cat(y_pred_all)
+
+    plotter.plot_edge_probs(y_true_all, y_pred_all)
+
     precision, recall, f1, best_th = plotter.precision_recall_f1_with_best_threshold(y_true_all, y_pred_all)
     print(f"Best threshold = {best_th:.4f}")
     print(f"Precision={precision:.4f}, Recall={recall:.4f}, F1={f1:.4f}\n")
@@ -285,11 +288,10 @@ def main() -> None:
     # -----------------------------
     predictor = TrackPredictor(
         model=model_ts,
-        min_track_length=5,
-        use_existing_edges=True
+        min_track_length=5
     )
 
-    predictor.threshold = best_th
+    predictor.threshold = 0.15
 
     all_tracks, all_noise = [], []
     length_counter = Counter()
@@ -297,7 +299,7 @@ def main() -> None:
         for batch_idx, batch in enumerate(val_loader):
             for event_id in batch.batch.unique():
                 event_data = extract_event(batch, event_id)
-                tracks, noise_hits = predictor.predict_tracks(event_data)
+                tracks, track_probs, noise_hits = predictor.predict_tracks(event_data)
                 all_tracks.append(tracks)
                 all_noise.append(noise_hits)
 
@@ -308,7 +310,7 @@ def main() -> None:
                 if args.max_plot_events < 0 or batch_idx < args.max_plot_events:
                     save_path = f"{plotter.print_dir}/batch{batch_idx}_event{event_id.item()}_{plotter.end_name}.png"
                     plotter.plot_predicted_tracks(
-                        event_data, tracks, noise_hits,
+                        event_data, tracks, track_probs, noise_hits,
                         title=f"Event {batch_idx}",
                         save_path=save_path
                     )
