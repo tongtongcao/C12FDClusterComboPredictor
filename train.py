@@ -18,6 +18,7 @@ from torch_geometric.data import Data, Batch
 from trainer import EdgeClassifier, EdgeClassifierWrapper, LossTracker, build_graph_from_hits
 from plotter import Plotter
 from trackPredictor import TrackPredictor
+from event import extract_event
 
 
 # -----------------------------
@@ -87,71 +88,6 @@ def load_graphs_from_csv(files: List[str], val_ratio: float = 0.2, keep_all_nois
 
 
 # -----------------------------
-# Extract a single event from a batched Data object
-# -----------------------------
-def extract_event(batch: Batch, event_id: int) -> Data:
-    """
-    Extract a single event's data from a batched PyG Data object.
-
-    Parameters
-    ----------
-    batch : torch_geometric.data.Batch
-        Batched Data object containing multiple events.
-    event_id : int
-        Index of the event within the batch.
-
-    Returns
-    -------
-    torch_geometric.data.Data
-        Data object for the specified event, including:
-        - x: node features
-        - edge_index: edges for this event
-        - edge_label: labels for edges (if present)
-        - superlayer: node superlayer
-        - track_ids: list of track ID sets
-    """
-    # Boolean mask of nodes belonging to this event
-    node_mask = (batch.batch == event_id)
-
-    # Mask edges where both endpoints are in this event
-    edge_mask = node_mask[batch.edge_index[0]] & node_mask[batch.edge_index[1]]
-
-    # Extract node features
-    x = batch.x[node_mask]
-    superlayer = batch.superlayer[node_mask]
-    cluster_id = batch.cluster_id[node_mask]
-
-    # Extract track_ids
-    track_ids = []
-    for tid, m in zip(batch.track_ids, node_mask):
-        if m:
-            if tid is None:
-                track_ids.append([])
-            elif isinstance(tid, list):
-                track_ids.append(tid)
-            else:  # 单个整数
-                track_ids.append([tid])
-
-    # Extract edges and edge labels
-    edge_index = batch.edge_index[:, edge_mask]
-    edge_label = batch.edge_label[edge_mask] if hasattr(batch, "edge_label") else None
-    edge_attr = batch.edge_attr[edge_mask] if hasattr(batch, "edge_attr") else None
-
-    # Build new Data object for this event
-    event_data = Data(
-        x=x,
-        edge_index=edge_index,
-        edge_label=edge_label,
-        edge_attr=edge_attr,
-        superlayer=superlayer,
-        track_ids=track_ids,
-        cluster_id=cluster_id
-    )
-
-    return event_data
-
-
-# -----------------------------
 # Main function
 # -----------------------------
 def main() -> None:
@@ -178,7 +114,7 @@ def main() -> None:
     print(f"Train size: {len(train_graphs)}, Val size: {len(val_graphs)}")
 
     train_loader = DataLoader(train_graphs, batch_size=args.batch_size, shuffle=True, num_workers=4, persistent_workers=True)
-    val_loader = DataLoader(val_graphs, batch_size=1, num_workers=4, persistent_workers=True)
+    val_loader = DataLoader(val_graphs, batch_size=1, num_workers=0, persistent_workers=False)
     end_time = time.time()
     print(f"Data loading took {end_time - start_time:.2f}s\n")
 
@@ -278,8 +214,6 @@ def main() -> None:
     plotter.plot_edge_probs(y_true_all, y_pred_all)
 
     precision, recall, f1, best_th = plotter.precision_recall_f1_with_best_threshold(y_true_all, y_pred_all)
-    print(f"Best threshold = {best_th:.4f}")
-    print(f"Precision={precision:.4f}, Recall={recall:.4f}, F1={f1:.4f}\n")
 
     tpr_list, tnr_list, thresholds = plotter.tpr_tnr_vs_threshold(y_true_all, y_pred_all)
 
@@ -291,6 +225,8 @@ def main() -> None:
         min_track_length=5
     )
 
+    plotter.track_purity_efficiency_vs_threshold(predictor, val_loader)
+
     predictor.threshold = 0.15
 
     all_tracks, all_noise = [], []
@@ -299,7 +235,7 @@ def main() -> None:
         for batch_idx, batch in enumerate(val_loader):
             for event_id in batch.batch.unique():
                 event_data = extract_event(batch, event_id)
-                tracks, track_probs, noise_hits = predictor.predict_tracks(event_data)
+                tracks, track_probs, track_labels, noise_hits = predictor.predict_tracks(event_data)
                 all_tracks.append(tracks)
                 all_noise.append(noise_hits)
 
@@ -308,11 +244,17 @@ def main() -> None:
                     length_counter[len(tr)] += 1
 
                 if args.max_plot_events < 0 or batch_idx < args.max_plot_events:
-                    save_path = f"{plotter.print_dir}/batch{batch_idx}_event{event_id.item()}_{plotter.end_name}.png"
-                    plotter.plot_predicted_tracks(
-                        event_data, tracks, track_probs, noise_hits,
+                    save_path_edges = f"{plotter.print_dir}/edges_batch{batch_idx}_event{event_id.item()}_{plotter.end_name}.png"
+                    save_path_tracks = f"{plotter.print_dir}/tracks_batch{batch_idx}_event{event_id.item()}_{plotter.end_name}.png"
+                    plotter.plot_all_edges(predictor,
+                                                  event_data,
+                                                  title=f"Event {batch_idx}",
+                                                  save_path=save_path_edges
+                    )
+                    plotter.plot_predicted_tracks(predictor,
+                        event_data,
                         title=f"Event {batch_idx}",
-                        save_path=save_path
+                        save_path=save_path_tracks
                     )
 
     # Print number of tracks with length 5 and 6

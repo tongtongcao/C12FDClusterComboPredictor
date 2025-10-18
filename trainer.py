@@ -103,8 +103,10 @@ def build_graph_from_hits(
 
     # Normalize node features (0~1)
     wire_min, wire_max = avgWire.min(), avgWire.max()
-    if wire_max - wire_min > 0:
-        avgWire_norm = (avgWire - wire_min) / (wire_max - wire_min)
+    wire_range = wire_max - wire_min
+
+    if wire_range > 0:
+        avgWire_norm = (avgWire - wire_min) / (wire_range)
     else:
         return None
 
@@ -124,12 +126,12 @@ def build_graph_from_hits(
                 edges.append([i, j])
                 label = 1 if (len(track_ids_list[i] & track_ids_list[j]) > 0) else 0
                 edge_labels.append(label)
-                edge_feats.append([superlayer_diff, avgWire_diff / (wire_max - wire_min)])
+                edge_feats.append([superlayer_diff, avgWire_diff / (wire_range)])
 
                 if bidirectional:
                     edges.append([j, i])
                     edge_labels.append(label)
-                    edge_feats.append([-superlayer_diff, -avgWire_diff / (wire_max - wire_min)])
+                    edge_feats.append([-superlayer_diff, -avgWire_diff / (wire_range)])
 
     if len(edges) == 0:
         return None
