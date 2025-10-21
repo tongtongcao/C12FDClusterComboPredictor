@@ -122,7 +122,7 @@ def main() -> None:
     # Initialize model
     # -----------------------------
     model = EdgeClassifier(
-        in_channels=7,
+        in_channels=2,
         hidden_channels=args.hidden_channels,
         num_layers=args.num_layers,
         lr=args.lr,

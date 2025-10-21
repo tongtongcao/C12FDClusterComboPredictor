@@ -33,6 +33,20 @@ import numpy as np
 import pandas as pd
 import random
 from pytorch_lightning.callbacks import Callback
+from typing import List
+
+def connectable(c1, c2, avgWire_diff_max: List[List[float]]):
+    L1, L2 = int(c1["superlayer"]), int(c2["superlayer"])
+    dL = abs(L2 - L1)
+    if dL == 0 or dL > len(avgWire_diff_max):
+        return False
+
+    lower = min(L1, L2)
+    thresholds = avgWire_diff_max[dL - 1]
+    if lower - 1 >= len(thresholds):
+        return False
+    max_diff = thresholds[lower - 1]
+    return abs(c1["avgWire"] - c2["avgWire"]) <= max_diff
 
 # -----------------------------
 # Parse trkIds
@@ -67,11 +81,18 @@ def parse_trkids(trk_str: str) -> set[int]:
 def build_graph_from_hits(
     clusters: pd.DataFrame,
     keep_all_noise_prob: float = 0.1,
-    avgWire_diff_max=[[12.0, 20.0, 12.0, 38.0, 14.0], [14.0, 18.0, 40.0, 40.0]],
+    avgWire_diff_max=[
+        [12.0, 20.0, 12.0, 38.0, 14.0],
+        [14.0, 18.0, 40.0, 40.0],
+        [24.0, 48.0, 48.0],
+        [55.0, 55.0],
+        [56.0],
+    ],
     bidirectional: bool = True
 ):
     """
     Build a PyG Data object from cluster hits.
+    任意层之间都可以连边，节点特征为归一化数值。
 
     Parameters
     ----------
@@ -81,7 +102,7 @@ def build_graph_from_hits(
         Probability to keep purely noisy events (no positive edges).
     avgWire_diff_max : list[list[float]]
         Thresholds for maximum allowed ΔavgWire between superlayers.
-        Format: [[for adjacent layers], [for skip layers]]
+        Format: [[for 0-layer gap], [for 1-layer gap], ...]
     bidirectional : bool
         Whether to add edges in both directions.
 
@@ -89,66 +110,61 @@ def build_graph_from_hits(
     -------
     Data | None
         PyG Data object with attributes:
-        - x: node features (avgWire_norm + superlayer one-hot)
-        - edge_index: candidate edge indices
-        - edge_attr: edge features [Δsuperlayer, ΔavgWire_norm]
-        - edge_label: edge labels (1 if tracks intersect, else 0)
-        - superlayer: original superlayer of nodes
-        Returns None if no valid edges or filtered out as noise.
+        x, edge_index, edge_attr, edge_label, superlayer, track_ids, cluster_id
     """
     avgWire = clusters["avgWire"].values.astype(np.float32)
     superlayer = clusters["superlayer"].values.astype(np.int32)
     track_ids_list = [parse_trkids(t) for t in clusters["trkIds"].values]
     num_clusters = len(clusters)
 
-    # Normalize node features (0~1)
+    # 归一化 avgWire
     wire_min, wire_max = avgWire.min(), avgWire.max()
     wire_range = wire_max - wire_min
-
     if wire_range > 0:
-        avgWire_norm = (avgWire - wire_min) / (wire_range)
+        avgWire_norm = (avgWire - wire_min) / wire_range
     else:
         return None
 
-    # Node features: normalized avgWire + one-hot superlayer
-    superlayer_onehot = np.eye(6)[superlayer - 1]
-    x = np.concatenate([avgWire_norm.reshape(-1, 1), superlayer_onehot], axis=1)
+    # 归一化 superlayer 到 [0,1]
+    superlayer_norm = superlayer / 6.0
+
+    # 节点特征: [avgWire_norm, superlayer_norm]
+    x = np.stack([avgWire_norm, superlayer_norm], axis=1)
 
     edges, edge_labels, edge_feats = [], [], []
 
     for i in range(num_clusters):
         for j in range(i + 1, num_clusters):
-            superlayer_diff = superlayer[i] - superlayer[j]
-            avgWire_diff = avgWire[i] - avgWire[j]
 
-            if (abs(superlayer_diff) == 1 and abs(avgWire_diff) < avgWire_diff_max[0][superlayer[i]-1]) or \
-               (abs(superlayer_diff) == 2 and abs(avgWire_diff) < avgWire_diff_max[1][superlayer[i]-1]):
+            c1, c2 = clusters.iloc[i], clusters.iloc[j]
+            if connectable(c1, c2, avgWire_diff_max):
+                sl_i, sl_j = int(c1["superlayer"]), int(c2["superlayer"])
+                avgWire_diff = c1["avgWire"] - c2["avgWire"]
+                superlayer_diff = sl_i - sl_j
+
+                # 添加边
                 edges.append([i, j])
                 label = 1 if (len(track_ids_list[i] & track_ids_list[j]) > 0) else 0
                 edge_labels.append(label)
-                edge_feats.append([superlayer_diff, avgWire_diff / (wire_range)])
+                edge_feats.append([superlayer_diff / 6.0, avgWire_diff / wire_range])
 
                 if bidirectional:
                     edges.append([j, i])
                     edge_labels.append(label)
-                    edge_feats.append([-superlayer_diff, -avgWire_diff / (wire_range)])
+                    edge_feats.append([-superlayer_diff / 6.0, -avgWire_diff / wire_range])
 
     if len(edges) == 0:
         return None
 
-    edges = np.array(edges)
-    edge_labels = np.array(edge_labels)
-    edge_feats = np.array(edge_feats, dtype=np.float32)
-
-    # Keep some purely noisy events
-    if edge_labels.sum() == 0 and random.random() > keep_all_noise_prob:
+    # 仅保留部分纯噪声事件
+    if sum(edge_labels) == 0 and random.random() > keep_all_noise_prob:
         return None
 
     data = Data(
         x=torch.tensor(x, dtype=torch.float),
-        edge_index=torch.tensor(edges.T, dtype=torch.long),
-        edge_label=torch.tensor(edge_labels, dtype=torch.float),
-        edge_attr=torch.tensor(edge_feats, dtype=torch.float),
+        edge_index=torch.tensor(np.array(edges).T, dtype=torch.long),
+        edge_label=torch.tensor(np.array(edge_labels), dtype=torch.float),
+        edge_attr=torch.tensor(np.array(edge_feats, dtype=np.float32), dtype=torch.float),
         superlayer=torch.tensor(superlayer, dtype=torch.long),
         track_ids=[list(s) for s in track_ids_list],
         cluster_id=torch.tensor(clusters["clusterIdx"].values, dtype=torch.long)
@@ -176,7 +192,7 @@ class EdgeClassifier(pl.LightningModule):
     dropout : float
         Dropout probability in MLP and GNN layers.
     """
-    def __init__(self, in_channels=7, hidden_channels=32, num_layers=2, lr=1e-3, dropout=0.1):
+    def __init__(self, in_channels=2, hidden_channels=32, num_layers=2, lr=1e-3, dropout=0.1):
         super().__init__()
         self.save_hyperparameters()
         self.convs = nn.ModuleList()
