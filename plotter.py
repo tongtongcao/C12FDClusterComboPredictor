@@ -118,10 +118,7 @@ class Plotter:
 
         num_nodes = data.x.size(0)
         avgWire = data.x[:, 0].cpu().numpy()
-        if data.x.size(1) > 1:
-            superlayer = data.x[:, 1:7].argmax(dim=1).cpu().numpy() + 1
-        else:
-            superlayer = data.superlayer.cpu().numpy()
+        superlayer = data.x[:, 1].cpu().numpy() * 6.0
 
         plt.figure(figsize=(8, 6))
         plt.scatter(superlayer, avgWire, color='black', s=50, label='Nodes')
@@ -169,10 +166,7 @@ class Plotter:
 
         plt.figure(figsize=(8, 6))
         avgWire = data.x[:, 0].cpu().numpy()
-        if data.x.size(1) > 1:
-            superlayer = data.x[:, 1:7].argmax(dim=1).cpu().numpy() + 1
-        else:
-            superlayer = data.superlayer.cpu().numpy()
+        superlayer = data.x[:, 1].cpu().numpy() * 6.0
 
         cluster_id_to_idx = None
         if hasattr(data, "cluster_id"):

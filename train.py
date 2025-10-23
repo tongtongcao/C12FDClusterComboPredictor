@@ -48,7 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--keep_all_noise_prob", type=float, default=0)
     parser.add_argument("--no_train", action="store_true")
     parser.add_argument("--enable_progress_bar", action="store_true")
-    parser.add_argument("--max_plot_events", type=int, default=25,
+    parser.add_argument("--max_plot_events", type=int, default=5,
                         help="maximum number of validation events to plot (-1 for all)")
     parser.add_argument("--val_ratio", type=float, default=0.2)
     return parser.parse_args()

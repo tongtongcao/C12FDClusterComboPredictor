@@ -35,141 +35,133 @@ import random
 from pytorch_lightning.callbacks import Callback
 from typing import List
 
-def connectable(c1, c2, avgWire_diff_max: List[List[float]]):
-    L1, L2 = int(c1["superlayer"]), int(c2["superlayer"])
-    dL = abs(L2 - L1)
-    if dL == 0 or dL > len(avgWire_diff_max):
-        return False
-
-    lower = min(L1, L2)
-    thresholds = avgWire_diff_max[dL - 1]
-    if lower - 1 >= len(thresholds):
-        return False
-    max_diff = thresholds[lower - 1]
-    return abs(c1["avgWire"] - c2["avgWire"]) <= max_diff
-
 # -----------------------------
-# Parse trkIds
+# 解析 trkIds
 # -----------------------------
-def parse_trkids(trk_str: str) -> set[int]:
+def parse_trkids(trk_series: pd.Series) -> list[set[int]]:
     """
-    Parse a track ID string into a set of integers.
-
-    Parameters
-    ----------
-    trk_str : str
-        Track ID string, can be '-1', empty, or multiple IDs separated by ';'.
-
-    Returns
-    -------
-    set[int]
-        A set of track IDs. Empty set for invalid or missing IDs.
+    将 pd.Series 中每个 trkIds 字符串解析为 set[int]。
     """
-    if pd.isna(trk_str):
-        return set()
-    s = str(trk_str).strip()
-    if s == '' or s == '-1':
-        return set()
-    try:
-        return set(int(t) for t in s.split(';') if t != '' and int(t) != -1)
-    except Exception:
-        return set()
+    trk_sets = []
+    for trk_str in trk_series:
+        if pd.isna(trk_str):
+            trk_sets.append(set())
+            continue
+        s = str(trk_str).strip()
+        if s == '' or s == '-1':
+            trk_sets.append(set())
+            continue
+        try:
+            trk_sets.append(set(int(t) for t in s.split(';') if t != '' and int(t) != -1))
+        except Exception:
+            trk_sets.append(set())
+    return trk_sets
+
 
 # -----------------------------
-# Build graph (with edge features & multi-track labels)
+# 向量化构建图（含边特征 & 标签）
 # -----------------------------
 def build_graph_from_hits(
     clusters: pd.DataFrame,
     keep_all_noise_prob: float = 0.1,
-    avgWire_diff_max=[
-        [12.0, 20.0, 12.0, 38.0, 14.0],
-        [14.0, 18.0, 40.0, 40.0],
-        [24.0, 48.0, 48.0],
-        [55.0, 55.0],
-        [56.0],
-    ],
+    avgWire_diff_max: list[list[float]] = None,
     bidirectional: bool = True
 ):
-    """
-    Build a PyG Data object from cluster hits.
-    任意层之间都可以连边，节点特征为归一化数值。
+    if avgWire_diff_max is None:
+        avgWire_diff_max = [
+            [12.0, 20.0, 12.0, 38.0, 14.0],
+            [14.0, 18.0, 40.0, 40.0],
+            [24.0, 48.0, 48.0],
+            [55.0, 55.0],
+            [56.0],
+        ]
 
-    Parameters
-    ----------
-    clusters : pd.DataFrame
-        DataFrame containing columns: 'avgWire', 'superlayer', 'trkIds'.
-    keep_all_noise_prob : float
-        Probability to keep purely noisy events (no positive edges).
-    avgWire_diff_max : list[list[float]]
-        Thresholds for maximum allowed ΔavgWire between superlayers.
-        Format: [[for 0-layer gap], [for 1-layer gap], ...]
-    bidirectional : bool
-        Whether to add edges in both directions.
+    num_clusters = len(clusters)
+    if num_clusters == 0:
+        return None
 
-    Returns
-    -------
-    Data | None
-        PyG Data object with attributes:
-        x, edge_index, edge_attr, edge_label, superlayer, track_ids, cluster_id
-    """
     avgWire = clusters["avgWire"].values.astype(np.float32)
     superlayer = clusters["superlayer"].values.astype(np.int32)
-    track_ids_list = [parse_trkids(t) for t in clusters["trkIds"].values]
-    num_clusters = len(clusters)
+    cluster_ids = clusters["clusterIdx"].values.astype(np.int32)
+    track_ids_list = parse_trkids(clusters["trkIds"])
 
-    # 归一化 avgWire
+    # -----------------------------
+    # 节点特征归一化
+    # -----------------------------
     wire_min, wire_max = avgWire.min(), avgWire.max()
     wire_range = wire_max - wire_min
-    if wire_range > 0:
-        avgWire_norm = (avgWire - wire_min) / wire_range
-    else:
+    if wire_range < 1e-8:
         return None
-
-    # 归一化 superlayer 到 [0,1]
+    avgWire_norm = (avgWire - wire_min) / wire_range
     superlayer_norm = superlayer / 6.0
+    x = torch.tensor(np.stack([avgWire_norm, superlayer_norm], axis=1), dtype=torch.float)
 
-    # 节点特征: [avgWire_norm, superlayer_norm]
-    x = np.stack([avgWire_norm, superlayer_norm], axis=1)
+    # -----------------------------
+    # 边计算向量化
+    # -----------------------------
+    L1 = superlayer[:, None]
+    L2 = superlayer[None, :]
+    dL = np.abs(L2 - L1)
 
-    edges, edge_labels, edge_feats = [], [], []
+    W1 = avgWire[:, None]
+    W2 = avgWire[None, :]
+    diff = W2 - W1  # 保留符号用于 edge_attr
 
-    for i in range(num_clusters):
-        for j in range(i + 1, num_clusters):
+    mask = np.zeros((num_clusters, num_clusters), dtype=bool)
+    for delta in range(1, len(avgWire_diff_max)+1):
+        idx = np.where(dL == delta)
+        for i, j in zip(*idx):
+            lower = min(superlayer[i], superlayer[j])
+            if lower - 1 >= len(avgWire_diff_max[delta-1]):
+                continue
+            max_diff = avgWire_diff_max[delta-1][lower-1]
+            if abs(diff[i,j]) <= max_diff:
+                mask[i,j] = True
 
-            c1, c2 = clusters.iloc[i], clusters.iloc[j]
-            if connectable(c1, c2, avgWire_diff_max):
-                sl_i, sl_j = int(c1["superlayer"]), int(c2["superlayer"])
-                avgWire_diff = c1["avgWire"] - c2["avgWire"]
-                superlayer_diff = sl_i - sl_j
+    # 获取 i<j 的边索引
+    src, dst = np.where(np.triu(mask, k=1))  # 上三角，避免 self-loop
 
-                # 添加边
-                edges.append([i, j])
-                label = 1 if (len(track_ids_list[i] & track_ids_list[j]) > 0) else 0
-                edge_labels.append(label)
-                edge_feats.append([superlayer_diff / 6.0, avgWire_diff / wire_range])
-
-                if bidirectional:
-                    edges.append([j, i])
-                    edge_labels.append(label)
-                    edge_feats.append([-superlayer_diff / 6.0, -avgWire_diff / wire_range])
-
-    if len(edges) == 0:
+    if len(src) == 0:
         return None
 
-    # 仅保留部分纯噪声事件
-    if sum(edge_labels) == 0 and random.random() > keep_all_noise_prob:
+    # 边特征
+    sl_diff = superlayer[src] - superlayer[dst]
+    aw_diff = avgWire[src] - avgWire[dst]
+    edge_attr = np.stack([sl_diff / 6.0, aw_diff / wire_range], axis=1).astype(np.float32)
+
+    # 边标签：1=共轨迹，0=无交集
+    edge_label = np.array([1 if len(track_ids_list[i] & track_ids_list[j]) > 0 else 0
+                           for i, j in zip(src, dst)], dtype=np.float32)
+
+    # -----------------------------
+    # 保留部分纯噪声事件
+    # -----------------------------
+    if edge_label.sum() == 0 and random.random() > keep_all_noise_prob:
         return None
+
+    # -----------------------------
+    # 双向边处理
+    # -----------------------------
+    if bidirectional:
+        src_all = np.concatenate([src, dst])
+        dst_all = np.concatenate([dst, src])
+        edge_index = torch.tensor(np.stack([src_all, dst_all], axis=0), dtype=torch.long)
+        edge_attr = torch.tensor(np.vstack([edge_attr, -edge_attr]), dtype=torch.float)
+        edge_label = torch.tensor(np.concatenate([edge_label, edge_label]), dtype=torch.float)
+    else:
+        edge_index = torch.tensor(np.stack([src, dst], axis=0), dtype=torch.long)
+        edge_attr = torch.tensor(edge_attr, dtype=torch.float)
+        edge_label = torch.tensor(edge_label, dtype=torch.float)
 
     data = Data(
-        x=torch.tensor(x, dtype=torch.float),
-        edge_index=torch.tensor(np.array(edges).T, dtype=torch.long),
-        edge_label=torch.tensor(np.array(edge_labels), dtype=torch.float),
-        edge_attr=torch.tensor(np.array(edge_feats, dtype=np.float32), dtype=torch.float),
+        x=x,
+        edge_index=edge_index,
+        edge_attr=edge_attr,
+        edge_label=edge_label,
         superlayer=torch.tensor(superlayer, dtype=torch.long),
         track_ids=[list(s) for s in track_ids_list],
-        cluster_id=torch.tensor(clusters["clusterIdx"].values, dtype=torch.long)
+        cluster_id=torch.tensor(cluster_ids, dtype=torch.long)
     )
-
     return data
 
 # -----------------------------
