@@ -89,11 +89,13 @@ def build_graph_from_hits(
     # 节点特征归一化
     # -----------------------------
     wire_min, wire_max = avgWire.min(), avgWire.max()
-    wire_range = wire_max - wire_min
-    if wire_range < 1e-8:
-        return None
+
+    wire_range = 112.0
+    superlayer_range = 6.0
+
     avgWire_norm = (avgWire - wire_min) / wire_range
-    superlayer_norm = superlayer / 6.0
+    superlayer_norm = superlayer / superlayer_range
+
     x = torch.tensor(np.stack([avgWire_norm, superlayer_norm], axis=1), dtype=torch.float)
 
     # -----------------------------
@@ -127,7 +129,7 @@ def build_graph_from_hits(
     # 边特征
     sl_diff = superlayer[src] - superlayer[dst]
     aw_diff = avgWire[src] - avgWire[dst]
-    edge_attr = np.stack([sl_diff / 6.0, aw_diff / wire_range], axis=1).astype(np.float32)
+    edge_attr = np.stack([sl_diff / superlayer_range, aw_diff / wire_range], axis=1).astype(np.float32)
 
     # 边标签：1=共轨迹，0=无交集
     edge_label = np.array([1 if len(track_ids_list[i] & track_ids_list[j]) > 0 else 0

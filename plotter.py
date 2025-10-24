@@ -117,7 +117,7 @@ class Plotter:
             edge_labels = [0] * len(edge_index)  # 默认全 0
 
         num_nodes = data.x.size(0)
-        avgWire = data.x[:, 0].cpu().numpy()
+        avgWire = data.x[:, 0].cpu().numpy() * 112.0
         superlayer = data.x[:, 1].cpu().numpy() * 6.0
 
         plt.figure(figsize=(8, 6))
@@ -132,7 +132,7 @@ class Plotter:
             plt.text(x_mid, y_mid, f"{p:.2f}/{l}", color='blue', fontsize=8, ha='center', va='bottom')
 
         plt.xlabel("Superlayer")
-        plt.ylabel("avgWireNorm")
+        plt.ylabel("avgWire")
         plt.title(title)
         plt.xticks(np.arange(1, 7))
         plt.grid(True)
@@ -165,7 +165,7 @@ class Plotter:
         tracks, track_probs, track_labels, noise_hits = predictor.predict_tracks(data)
 
         plt.figure(figsize=(8, 6))
-        avgWire = data.x[:, 0].cpu().numpy()
+        avgWire = data.x[:, 0].cpu().numpy() * 112.0
         superlayer = data.x[:, 1].cpu().numpy() * 6.0
 
         cluster_id_to_idx = None
@@ -212,7 +212,7 @@ class Plotter:
                         label="Noise", s=50, color="gray", alpha=0.6)
 
         plt.xlabel("Superlayer")
-        plt.ylabel("avgWireNorm")
+        plt.ylabel("avgWire")
         plt.title(title)
         plt.xticks(np.arange(1, 7))
         plt.legend()
