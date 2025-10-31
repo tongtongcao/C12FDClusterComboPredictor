@@ -12,9 +12,6 @@ import pandas as pd
 import networkx as nx
 from torch_geometric.data import Data, Batch
 
-# -----------------------------
-# Imports from your modules
-# -----------------------------
 from trainer import EdgeClassifier, EdgeClassifierWrapper, LossTracker, build_graph_from_hits
 from plotter import Plotter
 from trackPredictor import TrackPredictor
