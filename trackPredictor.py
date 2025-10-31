@@ -42,7 +42,7 @@ class TrackPredictor:
         with torch.no_grad():
             if isinstance(self.model, torch.jit.ScriptModule):
                 edge_attr = getattr(data, "edge_attr",
-                                    torch.empty((edge_index.size(1), 2), dtype=data.x.dtype, device=data.x.device))
+                                    torch.empty((edge_index.size(1), 3), dtype=data.x.dtype, device=data.x.device))
                 logits = self.model(data.x, edge_index, edge_attr)
             else:
                 logits = self.model(data)

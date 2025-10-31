@@ -41,10 +41,16 @@ public class CandidateEdgeGenerator {
 
         String csvFile = "clusters.csv";
         int maxEvents = 20;
-        float[][] maxWireDiff = {
-            {12f, 20f, 12f, 38f, 14f, 0f},   // superlayer difference = 1
-            {14f, 18f, 40f, 40f, 0f, 0f}     // superlayer difference = 2
+
+        // --- 改动 1：扩展 avgWire_diff_max ---
+        float[][] avgWireDiffMax = {
+            {12f, 20f, 12f, 38f, 14f},   // |ΔSL| = 1
+            {14f, 18f, 40f, 40f},        // |ΔSL| = 2
+            {24f, 48f, 48f},             // |ΔSL| = 3
+            {55f, 55f},                  // |ΔSL| = 4
+            {56f}                        // |ΔSL| = 5
         };
+
         boolean bidirectional = true;
         String modelPath = "model/edge_classifier.pt"; // TorchScript model path
 
@@ -52,7 +58,7 @@ public class CandidateEdgeGenerator {
             // -----------------------------
             // Load graphs from CSV
             // -----------------------------
-            List<GraphInput> graphs = loadGraphs(csvFile, maxEvents, maxWireDiff, bidirectional);
+            List<GraphInput> graphs = loadGraphs(csvFile, maxEvents, avgWireDiffMax, bidirectional);
             System.out.println("Loaded " + graphs.size() + " graph(s)");
 
             // -----------------------------
@@ -100,7 +106,7 @@ public class CandidateEdgeGenerator {
                     GraphInput g = graphs.get(i);
                     float[] preds = predictor.predict(g);
                     System.out.printf("Event %d: Nodes=%d, Edges=%d, Output=%d%n",
-                            i, g.x.length, g.edgeIndex[0].length, preds.length);
+                            i + 1, g.x.length, g.edgeIndex[0].length, preds.length);
                 }
             }
 
@@ -110,7 +116,7 @@ public class CandidateEdgeGenerator {
     }
 
     // -----------------------------
-    // CSV parsing and candidate edge generation (unchanged)
+    // CSV parsing and candidate edge generation
     // -----------------------------
     private static List<GraphInput> loadGraphs(String csvFile, int maxEvents, float[][] avgWireDiffMax, boolean bidirectional) throws IOException {
         List<GraphInput> graphs = new ArrayList<>();
@@ -120,6 +126,7 @@ public class CandidateEdgeGenerator {
             int currentEvent = -1;
             List<float[]> xList = new ArrayList<>();
             List<Float> avgWireList = new ArrayList<>();
+            List<Float> slopeList = new ArrayList<>();
             List<Integer> superlayers = new ArrayList<>();
 
             while ((line = br.readLine()) != null && graphs.size() < maxEvents) {
@@ -127,30 +134,35 @@ public class CandidateEdgeGenerator {
                 String[] tokens = line.split(",");
                 int eventIdx = Integer.parseInt(tokens[0]);
                 float avgWire = Float.parseFloat(tokens[2]);
-                int superlayer = Integer.parseInt(tokens[3]);
+                float slope = Float.parseFloat(tokens[3]);
+                int superlayer = Integer.parseInt(tokens[4]);
 
                 if (eventIdx != currentEvent) {
                     if (currentEvent != -1 && !xList.isEmpty()) {
-                        graphs.add(generateCandidateEdges(xList, avgWireList, superlayers, avgWireDiffMax, bidirectional));
+                        graphs.add(generateCandidateEdges(xList, avgWireList, slopeList, superlayers, avgWireDiffMax, bidirectional));
                     }
                     currentEvent = eventIdx;
                     xList.clear();
                     avgWireList.clear();
+                    slopeList.clear();
                     superlayers.clear();
                 }
 
-                // Node feature: [avgWire normalized, superlayer one-hot]
-                float[] feat = new float[7];
+                // --- 改动 2：节点特征包括 slope ---
+                // Node feature: [avgWire_norm, superlayer_norm, slope]
+                float[] feat = new float[3];
                 feat[0] = avgWire;
-                if (superlayer >= 1 && superlayer <= 6) feat[superlayer] = 1.0f;
+                feat[1] = superlayer / 6.0f;
+                feat[2] = slope; // 不归一化
 
                 xList.add(feat);
                 avgWireList.add(avgWire);
+                slopeList.add(slope);
                 superlayers.add(superlayer);
             }
 
             if (!xList.isEmpty() && graphs.size() < maxEvents) {
-                graphs.add(generateCandidateEdges(xList, avgWireList, superlayers, avgWireDiffMax, bidirectional));
+                graphs.add(generateCandidateEdges(xList, avgWireList, slopeList, superlayers, avgWireDiffMax, bidirectional));
             }
         }
 
@@ -160,6 +172,7 @@ public class CandidateEdgeGenerator {
     private static GraphInput generateCandidateEdges(
             List<float[]> xList,
             List<Float> avgWireList,
+            List<Float> slopeList,
             List<Integer> superlayers,
             float[][] avgWireDiffMax,
             boolean bidirectional
@@ -177,26 +190,37 @@ public class CandidateEdgeGenerator {
             return new GraphInput(xList.toArray(new float[0][]), new long[2][0], new float[0][]);
         }
 
+        // normalize avgWire only
         for (int i = 0; i < n; i++) {
             xList.get(i)[0] = (avgWireList.get(i) - avgWireMin) / avgWireRange;
         }
 
+        // --- 改动 3：扩展 ΔSL 判断逻辑 ---
         for (int i = 0; i < n; i++) {
             for (int j = i + 1; j < n; j++) {
-                int slDiff = superlayers.get(i) - superlayers.get(j);
+                int sl_i = superlayers.get(i);
+                int sl_j = superlayers.get(j);
+                int absSlDiff = Math.abs(sl_i - sl_j);
                 float avgWireDiff = avgWireList.get(i) - avgWireList.get(j);
-                int absSlDiff = Math.abs(slDiff);
 
                 boolean validEdge = false;
-                if (absSlDiff == 1 && Math.abs(avgWireDiff) < avgWireDiffMax[0][superlayers.get(i)-1]) validEdge = true;
-                else if (absSlDiff == 2 && Math.abs(avgWireDiff) < avgWireDiffMax[1][superlayers.get(i)-1]) validEdge = true;
+                if (absSlDiff >= 1 && absSlDiff <= avgWireDiffMax.length) {
+                    int row = absSlDiff - 1;
+                    int col = Math.min(sl_i, sl_j) - 1;
+                    if (col < avgWireDiffMax[row].length &&
+                        Math.abs(avgWireDiff) < avgWireDiffMax[row][col]) {
+                        validEdge = true;
+                    }
+                }
 
                 if (validEdge) {
+                    float slopeDiff = slopeList.get(i) - slopeList.get(j);
                     edges.add(new long[]{i, j});
-                    edgeAttrList.add(new float[]{slDiff, avgWireDiff / avgWireRange});
+                    edgeAttrList.add(new float[]{absSlDiff, avgWireDiff / avgWireRange, slopeDiff});
+
                     if (bidirectional) {
                         edges.add(new long[]{j, i});
-                        edgeAttrList.add(new float[]{-slDiff, -avgWireDiff / avgWireRange});
+                        edgeAttrList.add(new float[]{absSlDiff, -avgWireDiff / avgWireRange, -slopeDiff});
                     }
                 }
             }

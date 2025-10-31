@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("inputs", type=str, nargs="*", default=["clusters_sector1.csv"])
     parser.add_argument("--max_epochs", type=int, default=50)
     parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--outdir", type=str, default="outputs")
+    parser.add_argument("--outdir", type=str, default="outputs/local")
     parser.add_argument("--end_name", type=str, default="")
     parser.add_argument("--hidden_channels", type=int, default=32)
     parser.add_argument("--num_layers", type=int, default=2)
@@ -122,7 +122,7 @@ def main() -> None:
     # Initialize model
     # -----------------------------
     model = EdgeClassifier(
-        in_channels=2,
+        in_channels=3,
         hidden_channels=args.hidden_channels,
         num_layers=args.num_layers,
         lr=args.lr,
@@ -176,9 +176,9 @@ def main() -> None:
         except Exception as e:
             print("TorchScript scripting failed, trying trace...")
             # example for trace
-            example_x = torch.randn(5, 7)  # node features
+            example_x = torch.randn(5, 3)  # node features
             example_edge_index = torch.tensor([[0, 1, 2], [1, 2, 3]], dtype=torch.long)
-            example_edge_attr = torch.randn(3, 2)
+            example_edge_attr = torch.randn(3, 3)
             torchscript_model = torch.jit.trace(wrapper, (example_x, example_edge_index, example_edge_attr))
 
         torchscript_model.save(ts_model_path)
@@ -202,7 +202,7 @@ def main() -> None:
     with torch.no_grad():
         for batch in val_loader:
             edge_attr = getattr(batch, "edge_attr",
-                                torch.empty((batch.edge_index.size(1), 2), dtype=batch.x.dtype, device=batch.x.device))
+                                torch.empty((batch.edge_index.size(1), 3), dtype=batch.x.dtype, device=batch.x.device))
             out = model_ts(batch.x, batch.edge_index, edge_attr)
             out_prob = torch.sigmoid(out)
             y_true_all.append(batch.edge_label.cpu())
