@@ -129,7 +129,7 @@ class Plotter:
             plt.plot(x_coords, y_coords, color='gray', alpha=0.5)
             x_mid = sum(x_coords) / 2
             y_mid = sum(y_coords) / 2
-            plt.text(x_mid, y_mid, f"{p:.2f}/{l}", color='blue', fontsize=8, ha='center', va='bottom')
+            plt.text(x_mid, y_mid, f"{p:.2f}/{int(l)}", color='blue', fontsize=8, ha='center', va='bottom')
 
         plt.xlabel("Superlayer")
         plt.ylabel("avgWire")
