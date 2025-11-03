@@ -22,7 +22,7 @@ import java.util.*;
  * Java + DJL inference example for TorchScript EdgeClassifierWrapper.
  * Generates node features and edge features only.
  */
-public class CandidateEdgeGenerator {
+public class Main {
 
     /** Graph input data structure. */
     static class GraphInput {
@@ -39,7 +39,7 @@ public class CandidateEdgeGenerator {
 
     public static void main(String[] args) {
 
-        String csvFile = "clusters.csv";
+        String csvFile = "clusters_sector1_small.csv";
         int maxEvents = 20;
 
         // --- 改动 1：扩展 avgWire_diff_max ---
@@ -52,7 +52,7 @@ public class CandidateEdgeGenerator {
         };
 
         boolean bidirectional = true;
-        String modelPath = "model/edge_classifier.pt"; // TorchScript model path
+        String modelPath = "nets/gnn_default.pt"; // TorchScript model path
 
         try {
             // -----------------------------
@@ -124,7 +124,6 @@ public class CandidateEdgeGenerator {
         try (BufferedReader br = new BufferedReader(new FileReader(csvFile))) {
             String line;
             int currentEvent = -1;
-            List<float[]> xList = new ArrayList<>();
             List<Float> avgWireList = new ArrayList<>();
             List<Float> slopeList = new ArrayList<>();
             List<Integer> superlayers = new ArrayList<>();
@@ -138,11 +137,10 @@ public class CandidateEdgeGenerator {
                 int superlayer = Integer.parseInt(tokens[4]);
 
                 if (eventIdx != currentEvent) {
-                    if (currentEvent != -1 && !xList.isEmpty()) {
-                        graphs.add(generateCandidateEdges(xList, avgWireList, slopeList, superlayers, avgWireDiffMax, bidirectional));
+                    if (currentEvent != -1) {
+                        graphs.add(generateCandidateEdges(avgWireList, slopeList, superlayers, avgWireDiffMax, bidirectional));
                     }
                     currentEvent = eventIdx;
-                    xList.clear();
                     avgWireList.clear();
                     slopeList.clear();
                     superlayers.clear();
@@ -152,17 +150,16 @@ public class CandidateEdgeGenerator {
                 // Node feature: [avgWire_norm, superlayer_norm, slope]
                 float[] feat = new float[3];
                 feat[0] = avgWire;
-                feat[1] = superlayer / 6.0f;
-                feat[2] = slope; // 不归一化
+                feat[1] = slope; // 不归一化
+                feat[2] = superlayer;
 
-                xList.add(feat);
                 avgWireList.add(avgWire);
                 slopeList.add(slope);
                 superlayers.add(superlayer);
             }
 
-            if (!xList.isEmpty() && graphs.size() < maxEvents) {
-                graphs.add(generateCandidateEdges(xList, avgWireList, slopeList, superlayers, avgWireDiffMax, bidirectional));
+            if (!avgWireList.isEmpty() && graphs.size() < maxEvents) {
+                graphs.add(generateCandidateEdges(avgWireList, slopeList, superlayers, avgWireDiffMax, bidirectional));
             }
         }
 
@@ -170,37 +167,33 @@ public class CandidateEdgeGenerator {
     }
 
     private static GraphInput generateCandidateEdges(
-            List<float[]> xList,
             List<Float> avgWireList,
             List<Float> slopeList,
             List<Integer> superlayers,
             float[][] avgWireDiffMax,
             boolean bidirectional
     ) {
-        List<long[]> edges = new ArrayList<>();
-        List<float[]> edgeAttrList = new ArrayList<>();
-        int n = xList.size();
+        int n = avgWireList.size();
+        float avgWireRange = 112.0f;
+        float superlayerRange = 6.0f;
 
-        float avgWireMin = Collections.min(avgWireList);
-        float avgWireMax = Collections.max(avgWireList);
-        float avgWireRange = avgWireMax - avgWireMin;
-
-        if (avgWireRange == 0) {
-            System.out.println("Skipping event: avgWireRange == 0");
-            return new GraphInput(xList.toArray(new float[0][]), new long[2][0], new float[0][]);
-        }
-
-        // normalize avgWire only
+        // 构建节点特征
+        float[][] x = new float[n][3];
         for (int i = 0; i < n; i++) {
-            xList.get(i)[0] = (avgWireList.get(i) - avgWireMin) / avgWireRange;
+            x[i][0] = avgWireList.get(i) / avgWireRange;   // avgWire_norm
+            x[i][1] = slopeList.get(i);                    // slope
+            x[i][2] = superlayers.get(i) / superlayerRange; // superlayer_norm
         }
 
         // --- 改动 3：扩展 ΔSL 判断逻辑 ---
+        List<long[]> edges = new ArrayList<>();
+        List<float[]> edgeAttrList = new ArrayList<>();
         for (int i = 0; i < n; i++) {
             for (int j = i + 1; j < n; j++) {
                 int sl_i = superlayers.get(i);
                 int sl_j = superlayers.get(j);
-                int absSlDiff = Math.abs(sl_i - sl_j);
+                int slDiff = sl_i - sl_j;
+                int absSlDiff = Math.abs(slDiff);
                 float avgWireDiff = avgWireList.get(i) - avgWireList.get(j);
 
                 boolean validEdge = false;
@@ -216,17 +209,16 @@ public class CandidateEdgeGenerator {
                 if (validEdge) {
                     float slopeDiff = slopeList.get(i) - slopeList.get(j);
                     edges.add(new long[]{i, j});
-                    edgeAttrList.add(new float[]{absSlDiff, avgWireDiff / avgWireRange, slopeDiff});
+                    edgeAttrList.add(new float[]{avgWireDiff / avgWireRange, slopeDiff, slDiff / superlayerRange});
 
                     if (bidirectional) {
                         edges.add(new long[]{j, i});
-                        edgeAttrList.add(new float[]{absSlDiff, -avgWireDiff / avgWireRange, -slopeDiff});
+                        edgeAttrList.add(new float[]{-avgWireDiff / avgWireRange, -slopeDiff, -slDiff / superlayerRange});
                     }
                 }
             }
         }
 
-        float[][] x = xList.toArray(new float[0][]);
         float[][] edgeAttr = edgeAttrList.toArray(new float[0][]);
         long[][] edgeIndex = new long[2][edges.size()];
         for (int k = 0; k < edges.size(); k++) {

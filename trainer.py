@@ -63,15 +63,14 @@ def build_graph_from_hits(
     # -----------------------------
     # 节点特征
     # -----------------------------
-    wire_min, wire_max = avgWire.min(), avgWire.max()
     wire_range = 112.0
     superlayer_range = 6.0
 
-    avgWire_norm = (avgWire - wire_min) / wire_range
+    avgWire_norm = avgWire / wire_range
     superlayer_norm = superlayer / superlayer_range
 
-    # 节点特征包含：avgWire_norm, superlayer_norm, slope (未归一化)
-    x = torch.tensor(np.stack([avgWire_norm, superlayer_norm, slope], axis=1), dtype=torch.float)
+    # 节点特征包含：avgWire_norm, slope, superlayer_norm
+    x = torch.tensor(np.stack([avgWire_norm, slope, superlayer_norm], axis=1), dtype=torch.float)
 
     # -----------------------------
     # 边构造
@@ -105,7 +104,7 @@ def build_graph_from_hits(
     aw_diff = avgWire[src] - avgWire[dst]
     slope_diff = slope[src] - slope[dst]  # <--- 新增
 
-    edge_attr = np.stack([sl_diff / superlayer_range, aw_diff / wire_range, slope_diff], axis=1).astype(np.float32)
+    edge_attr = np.stack([aw_diff / wire_range, slope_diff, sl_diff / superlayer_range], axis=1).astype(np.float32)
 
     # 边标签
     edge_label = np.array([1 if len(track_ids_list[i] & track_ids_list[j]) > 0 else 0
@@ -190,7 +189,7 @@ class EdgeClassifier(pl.LightningModule):
         pos_weight = torch.tensor(max(neg_count / max(1.0, pos_count), 1.0),
                                   dtype=torch.float, device=logits.device)
         loss = F.binary_cross_entropy_with_logits(logits, labels, pos_weight=pos_weight)
-        self.log("train_loss", loss, on_step=False, on_epoch=True)
+        self.log("train_loss", loss, on_step=False, on_epoch=True, batch_size=labels.size(0))
         return loss
 
     def validation_step(self, batch: Batch) -> torch.Tensor:
@@ -201,7 +200,7 @@ class EdgeClassifier(pl.LightningModule):
         pos_weight = torch.tensor(max(neg_count / max(1.0, pos_count), 1.0),
                                   dtype=torch.float, device=logits.device)
         loss = F.binary_cross_entropy_with_logits(logits, labels, pos_weight=pos_weight)
-        self.log("val_loss", loss, prog_bar=True, on_step=False, on_epoch=True)
+        self.log("val_loss", loss, prog_bar=True, on_step=False, on_epoch=True, batch_size=labels.size(0))
         return loss
 
     def configure_optimizers(self):
