@@ -13,9 +13,22 @@ from pytorch_lightning.callbacks import Callback
 
 
 # -----------------------------
-# 解析 trkIds
+# Parse track IDs
 # -----------------------------
 def parse_trkids(trk_series: pd.Series) -> List[set[int]]:
+    """
+    Parse track IDs from a pandas Series of strings.
+
+    Parameters
+    ----------
+    trk_series : pd.Series
+        A pandas Series containing track ID strings (e.g., "1;2;3").
+
+    Returns
+    -------
+    List[set[int]]
+        A list of sets of integers representing parsed track IDs. Empty sets for NaN or invalid entries.
+    """
     trk_sets = []
     for trk_str in trk_series:
         if pd.isna(trk_str):
@@ -33,14 +46,34 @@ def parse_trkids(trk_series: pd.Series) -> List[set[int]]:
 
 
 # -----------------------------
-# 构建图
+# Build graph from hits
 # -----------------------------
 def build_graph_from_hits(
     clusters: pd.DataFrame,
     keep_all_noise_prob: float = 0.1,
-    avgWire_diff_max: list[list[float]] = None,
+    avgWire_diff_max: Optional[List[List[float]]] = None,
     bidirectional: bool = True
-):
+) -> Optional[Data]:
+    """
+    Construct a PyTorch Geometric graph from cluster hits.
+
+    Parameters
+    ----------
+    clusters : pd.DataFrame
+        DataFrame containing cluster information with columns 'avgWire', 'slope', 'superlayer', 'clusterIdx', 'trkIds'.
+    keep_all_noise_prob : float, default=0.1
+        Probability to keep a graph with only negative edges (all noise).
+    avgWire_diff_max : list[list[float]], optional
+        Maximum allowed average wire differences for edges between superlayers.
+    bidirectional : bool, default=True
+        Whether to create bidirectional edges.
+
+    Returns
+    -------
+    Optional[Data]
+        A PyTorch Geometric Data object with node features, edge indices, edge features, and edge labels.
+        Returns None if no valid edges exist.
+    """
     if avgWire_diff_max is None:
         avgWire_diff_max = [
             [12.0, 20.0, 12.0, 38.0, 14.0],
@@ -55,33 +88,26 @@ def build_graph_from_hits(
         return None
 
     avgWire = clusters["avgWire"].values.astype(np.float32)
-    slope = clusters["slope"].values.astype(np.float32)   # <--- 新特征，不归一化
+    slope = clusters["slope"].values.astype(np.float32)
     superlayer = clusters["superlayer"].values.astype(np.int32)
     cluster_ids = clusters["clusterIdx"].values.astype(np.int32)
     track_ids_list = parse_trkids(clusters["trkIds"])
 
-    # -----------------------------
-    # 节点特征
-    # -----------------------------
+    # Node features
     wire_range = 112.0
     superlayer_range = 6.0
-
     avgWire_norm = avgWire / wire_range
     superlayer_norm = superlayer / superlayer_range
-
-    # 节点特征包含：avgWire_norm, slope, superlayer_norm
     x = torch.tensor(np.stack([avgWire_norm, slope, superlayer_norm], axis=1), dtype=torch.float)
 
-    # -----------------------------
-    # 边构造
-    # -----------------------------
+    # Edge construction
     L1 = superlayer[:, None]
     L2 = superlayer[None, :]
     dL = np.abs(L2 - L1)
 
     W1 = avgWire[:, None]
     W2 = avgWire[None, :]
-    diff = W2 - W1  # 用于 edge_attr
+    diff = W2 - W1
 
     mask = np.zeros((num_clusters, num_clusters), dtype=bool)
     for delta in range(1, len(avgWire_diff_max) + 1):
@@ -94,19 +120,18 @@ def build_graph_from_hits(
             if abs(diff[i, j]) <= max_diff:
                 mask[i, j] = True
 
-    src, dst = np.where(np.triu(mask, k=1))  # 上三角
+    src, dst = np.where(np.triu(mask, k=1))
 
     if len(src) == 0:
         return None
 
-    # 边特征
+    # Edge features
     sl_diff = superlayer[src] - superlayer[dst]
     aw_diff = avgWire[src] - avgWire[dst]
-    slope_diff = slope[src] - slope[dst]  # <--- 新增
-
+    slope_diff = slope[src] - slope[dst]
     edge_attr = np.stack([aw_diff / wire_range, slope_diff, sl_diff / superlayer_range], axis=1).astype(np.float32)
 
-    # 边标签
+    # Edge labels
     edge_label = np.array([1 if len(track_ids_list[i] & track_ids_list[j]) > 0 else 0
                            for i, j in zip(src, dst)], dtype=np.float32)
 
@@ -137,10 +162,28 @@ def build_graph_from_hits(
 
 
 # -----------------------------
-# 模型定义
+# Edge classifier model
 # -----------------------------
 class EdgeClassifier(pl.LightningModule):
+    """
+    GraphSAGE-based edge classifier.
+    """
+
     def __init__(self, in_channels=3, hidden_channels=32, num_layers=2, lr=1e-3, dropout=0.1):
+        """
+        Parameters
+        ----------
+        in_channels : int
+            Number of input node features.
+        hidden_channels : int
+            Number of hidden channels in GNN layers.
+        num_layers : int
+            Number of GraphSAGE layers.
+        lr : float
+            Learning rate for optimizer.
+        dropout : float
+            Dropout probability.
+        """
         super().__init__()
         self.save_hyperparameters()
         self.convs = nn.ModuleList()
@@ -160,6 +203,19 @@ class EdgeClassifier(pl.LightningModule):
         self.dropout = dropout
 
     def forward(self, data: Batch) -> torch.Tensor:
+        """
+        Forward pass.
+
+        Parameters
+        ----------
+        data : Batch
+            A batch of graphs (PyTorch Geometric Batch object).
+
+        Returns
+        -------
+        torch.Tensor
+            Predicted logits for edges.
+        """
         if not isinstance(data, Batch):
             data = Batch.from_data_list([data])
 
@@ -206,25 +262,35 @@ class EdgeClassifier(pl.LightningModule):
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.lr)
 
+
 # -----------------------------
-# Inference Wrapper: single or batch graph
+# Inference wrapper
 # -----------------------------
 class EdgeClassifierWrapper(nn.Module):
     """
     TorchScript-compatible EdgeClassifier wrapper.
-    Only Tensor fields are used; supports arbitrary node/edge counts.
 
     Forward signature:
         x: [num_nodes, in_channels]
         edge_index: [2, num_edges]
         edge_attr: [num_edges, edge_feat_dim] or empty tensor
-    Returns:
-        logits: [num_edges]
+
+    Returns
+    -------
+    logits : [num_edges]
+        Predicted logits for each edge.
     """
 
-    def __init__(self, model: nn.Module, edge_feat_dim: int = 3):  # <-- 改这里
+    def __init__(self, model: nn.Module, edge_feat_dim: int = 3):
+        """
+        Parameters
+        ----------
+        model : nn.Module
+            Pretrained EdgeClassifier.
+        edge_feat_dim : int
+            Number of edge feature dimensions.
+        """
         super().__init__()
-        # Copy GNN layers
         self.convs = model.convs
         self.bns = model.bns
         self.classifier = model.classifier
@@ -232,33 +298,31 @@ class EdgeClassifierWrapper(nn.Module):
         self.edge_feat_dim = edge_feat_dim
 
     def forward(self, x: Tensor, edge_index: Tensor, edge_attr: Tensor) -> Tensor:
-        # Ensure edge_attr is tensor
         if edge_attr.numel() == 0:
             edge_attr = torch.zeros((edge_index.size(1), self.edge_feat_dim),
                                     dtype=x.dtype, device=x.device)
 
-        # GraphSAGE forward
         for conv, bn in zip(self.convs, self.bns):
             x = conv(x, edge_index)
             x = bn(x)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
 
-        # Gather source and target node embeddings
         src = edge_index[0]
         dst = edge_index[1]
-
-        # Concatenate node embeddings and edge features
         edge_feat = torch.cat([x[src], x[dst], edge_attr], dim=1)
-
-        # MLP classifier
         logits = self.classifier(edge_feat).view(-1)
         return logits
 
+
 # -----------------------------
-# Callback
+# Callback for tracking losses
 # -----------------------------
 class LossTracker(Callback):
+    """
+    PyTorch Lightning callback to track training and validation losses.
+    """
+
     def __init__(self):
         self.train_losses = []
         self.val_losses = []

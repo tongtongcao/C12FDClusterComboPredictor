@@ -46,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no_train", action="store_true")
     parser.add_argument("--enable_progress_bar", action="store_true")
     parser.add_argument("--max_plot_events", type=int, default=5,
-                        help="maximum number of validation events to plot (-1 for all)")
+                        help="Maximum number of validation events to plot (-1 for all)")
     parser.add_argument("--val_ratio", type=float, default=0.2)
     return parser.parse_args()
 
@@ -54,23 +54,27 @@ def parse_args() -> argparse.Namespace:
 # -----------------------------
 # Load CSV files and convert to PyG Data graphs
 # -----------------------------
-def load_graphs_from_csv(files: List[str], val_ratio: float = 0.2, keep_all_noise_prob: float = 0.1) -> Tuple[List[Data], List[Data]]:
+def load_graphs_from_csv(
+    files: List[str],
+    val_ratio: float = 0.2,
+    keep_all_noise_prob: float = 0.1
+) -> Tuple[List[Data], List[Data]]:
     """
-    Load multiple CSV files and convert events into PyG Data objects.
+    Load multiple CSV files and convert events into PyTorch Geometric Data objects.
 
     Parameters
     ----------
-    files : list[str]
+    files : List[str]
         List of CSV filenames.
     val_ratio : float
-        Fraction of events for validation.
+        Fraction of events to use for validation.
     keep_all_noise_prob : float
         Probability to keep events with no positive edges.
 
     Returns
     -------
-    tuple[list[Data], list[Data]]
-        (train_graphs, val_graphs)
+    Tuple[List[Data], List[Data]]
+        A tuple of (train_graphs, val_graphs) as lists of PyG Data objects.
     """
     all_graphs: List[Data] = []
     for f in files:
@@ -91,7 +95,8 @@ def main() -> None:
     """
     Main script for training a GNN edge classifier and performing track prediction.
 
-    Steps:
+    Steps
+    -----
     1. Parse arguments and load CSV files into PyG Data graphs.
     2. Initialize model, loss tracker, and plotting utilities.
     3. Train the EdgeClassifier model (unless --no_train is set).
@@ -108,10 +113,14 @@ def main() -> None:
     train_graphs, val_graphs = load_graphs_from_csv(
         args.inputs, val_ratio=args.val_ratio, keep_all_noise_prob=args.keep_all_noise_prob
     )
-    print(f"Train size: {len(train_graphs)}, Val size: {len(val_graphs)}")
+    print(f"Train size: {len(train_graphs)}, Validation size: {len(val_graphs)}")
 
-    train_loader = DataLoader(train_graphs, batch_size=args.batch_size, shuffle=True, num_workers=4, persistent_workers=True)
-    val_loader = DataLoader(val_graphs, batch_size=1, num_workers=0, persistent_workers=False)
+    train_loader = DataLoader(
+        train_graphs, batch_size=args.batch_size, shuffle=True, num_workers=4, persistent_workers=True
+    )
+    val_loader = DataLoader(
+        val_graphs, batch_size=1, num_workers=0, persistent_workers=False
+    )
     end_time = time.time()
     print(f"Data loading took {end_time - start_time:.2f}s\n")
 
@@ -172,8 +181,7 @@ def main() -> None:
             torchscript_model = torch.jit.script(wrapper)
         except Exception as e:
             print("TorchScript scripting failed, trying trace...")
-            # example for trace
-            example_x = torch.randn(5, 3)  # node features
+            example_x = torch.randn(5, 3)  # Node features
             example_edge_index = torch.tensor([[0, 1, 2], [1, 2, 3]], dtype=torch.long)
             example_edge_attr = torch.randn(3, 3)
             torchscript_model = torch.jit.trace(wrapper, (example_x, example_edge_index, example_edge_attr))
@@ -198,8 +206,10 @@ def main() -> None:
     y_true_all, y_pred_all = [], []
     with torch.no_grad():
         for batch in val_loader:
-            edge_attr = getattr(batch, "edge_attr",
-                                torch.empty((batch.edge_index.size(1), 3), dtype=batch.x.dtype, device=batch.x.device))
+            edge_attr = getattr(
+                batch, "edge_attr",
+                torch.empty((batch.edge_index.size(1), 3), dtype=batch.x.dtype, device=batch.x.device)
+            )
             out = model_ts(batch.x, batch.edge_index, edge_attr)
             out_prob = torch.sigmoid(out)
             y_true_all.append(batch.edge_label.cpu())
@@ -211,19 +221,13 @@ def main() -> None:
     plotter.plot_edge_probs(y_true_all, y_pred_all)
 
     precision, recall, f1, best_th = plotter.precision_recall_f1_with_best_threshold(y_true_all, y_pred_all)
-
     tpr_list, tnr_list, thresholds = plotter.tpr_tnr_vs_threshold(y_true_all, y_pred_all)
 
     # -----------------------------
     # TrackPredictor with best threshold
     # -----------------------------
-    predictor = TrackPredictor(
-        model=model_ts,
-        min_track_length=5
-    )
-
+    predictor = TrackPredictor(model=model_ts, min_track_length=5)
     plotter.track_purity_efficiency_vs_threshold(predictor, val_loader)
-
     predictor.threshold = 0.15
 
     all_tracks, all_noise = [], []
@@ -243,16 +247,8 @@ def main() -> None:
                 if args.max_plot_events < 0 or batch_idx < args.max_plot_events:
                     save_path_edges = f"{plotter.print_dir}/edges_batch{batch_idx}_event{event_id.item()}_{plotter.end_name}.png"
                     save_path_tracks = f"{plotter.print_dir}/tracks_batch{batch_idx}_event{event_id.item()}_{plotter.end_name}.png"
-                    plotter.plot_all_edges(predictor,
-                                                  event_data,
-                                                  title=f"Event {batch_idx}",
-                                                  save_path=save_path_edges
-                    )
-                    plotter.plot_predicted_tracks(predictor,
-                        event_data,
-                        title=f"Event {batch_idx}",
-                        save_path=save_path_tracks
-                    )
+                    plotter.plot_all_edges(predictor, event_data, title=f"Event {batch_idx}", save_path=save_path_edges)
+                    plotter.plot_predicted_tracks(predictor, event_data, title=f"Event {batch_idx}", save_path=save_path_tracks)
 
     # Print number of tracks with length 5 and 6
     len_5 = length_counter.get(5, 0)

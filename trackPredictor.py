@@ -51,15 +51,11 @@ class TrackPredictor:
         return preds, probs
 
     # -----------------------------
-    # Dense track retention
+    # Retain dense tracks while avoiding excessive overlap
     # -----------------------------
     def _retain_dense_tracks(self, all_tracks: List[List[int]],
                              edge_prob_map: dict,
                              edge_label_map: dict):
-        """
-        Retain dense tracks while avoiding excessive overlap.
-        Returns per-track probabilities and labels.
-        """
         final_tracks = []
         final_track_probs = []
         final_track_labels = []
@@ -77,7 +73,6 @@ class TrackPredictor:
         track_infos.sort(key=lambda x: (-x[0], -sum(x[1]) if x[1] else 0.0))
 
         node_usage_count = {}
-
         for length, prob_list, label_list, tr in track_infos:
             overlap_nodes = sum(node_usage_count.get(n, 0) for n in tr)
             if overlap_nodes <= self.max_overlap_nodes:
@@ -107,11 +102,11 @@ class TrackPredictor:
 
         return final_tracks, final_track_probs, final_track_labels
 
+    # -----------------------------
+    # Predict tracks (DFS + threshold)
+    # -----------------------------
     def predict_tracks(self, data, threshold=None) -> Tuple[
         List[List[int]], List[List[float]], List[List[int]], List[int]]:
-        """
-        Predict tracks with per-edge probabilities and true labels.
-        """
         if threshold is None:
             threshold = self.threshold
 
@@ -120,7 +115,7 @@ class TrackPredictor:
         num_nodes = data.x.size(0)
         superlayer = data.superlayer.cpu().numpy()
 
-        # 构建 adjacency & edge maps
+        # adjacency & edge maps
         adj = {i: set() for i in range(num_nodes)}
         edge_prob_map = {}
         if hasattr(data, "edge_label"):
@@ -175,11 +170,11 @@ class TrackPredictor:
         else:
             return final_tracks, final_track_probs, final_track_labels, noise_hits
 
+    # -----------------------------
+    # Predict tracks using maximum spanning tree
+    # -----------------------------
     def predict_tracks_with_max_weight(self, data, threshold=None) -> Tuple[
         List[List[int]], List[List[float]], List[List[int]], List[int]]:
-        """
-        Predict tracks using MST weighted by edge probabilities, with per-edge probabilities and true labels.
-        """
         if threshold is None:
             threshold = self.threshold
 
@@ -252,4 +247,3 @@ class TrackPredictor:
             return final_tracks_cluster, final_track_probs, final_track_labels, noise_hits_cluster
         else:
             return final_tracks, final_track_probs, final_track_labels, noise_hits
-

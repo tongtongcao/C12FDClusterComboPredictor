@@ -19,17 +19,23 @@ import java.nio.file.Paths;
 import java.util.*;
 
 /**
- * Java + DJL inference example for TorchScript EdgeClassifierWrapper.
- * Generates node features and edge features only.
+ * Java + DJL inference example for a TorchScript EdgeClassifierWrapper.
+ * Generates node features and edge features for particle tracking.
  */
 public class Main {
 
-    /** Graph input data structure. */
+    /** Graph input data structure */
     static class GraphInput {
         float[][] x;
         long[][] edgeIndex;
         float[][] edgeAttr;
 
+        /**
+         * Constructor
+         * @param x Node features: [num_nodes][num_features]
+         * @param edgeIndex Edge indices: [2][num_edges]
+         * @param edgeAttr Edge features: [num_edges][num_edge_features]
+         */
         public GraphInput(float[][] x, long[][] edgeIndex, float[][] edgeAttr) {
             this.x = x;
             this.edgeIndex = edgeIndex;
@@ -42,7 +48,7 @@ public class Main {
         String csvFile = "clusters_sector1_small.csv";
         int maxEvents = 20;
 
-        // --- 改动 1：扩展 avgWire_diff_max ---
+        // ΔSL maximum difference table
         float[][] avgWireDiffMax = {
             {12f, 20f, 12f, 38f, 14f},   // |ΔSL| = 1
             {14f, 18f, 40f, 40f},        // |ΔSL| = 2
@@ -55,15 +61,11 @@ public class Main {
         String modelPath = "nets/gnn_default.pt"; // TorchScript model path
 
         try {
-            // -----------------------------
             // Load graphs from CSV
-            // -----------------------------
             List<GraphInput> graphs = loadGraphs(csvFile, maxEvents, avgWireDiffMax, bidirectional);
             System.out.println("Loaded " + graphs.size() + " graph(s)");
 
-            // -----------------------------
             // Translator for TorchScript model
-            // -----------------------------
             Translator<GraphInput, float[]> translator = new Translator<>() {
                 @Override
                 public NDList processInput(TranslatorContext ctx, GraphInput input) {
@@ -85,9 +87,7 @@ public class Main {
                 }
             };
 
-            // -----------------------------
             // Load TorchScript model
-            // -----------------------------
             Criteria<GraphInput, float[]> criteria = Criteria.builder()
                     .setTypes(GraphInput.class, float[].class)
                     .optModelPath(Paths.get(modelPath))
@@ -99,9 +99,7 @@ public class Main {
             try (ZooModel<GraphInput, float[]> model = criteria.loadModel();
                  Predictor<GraphInput, float[]> predictor = model.newPredictor()) {
 
-                // -----------------------------
-                // Inference
-                // -----------------------------
+                // Perform inference
                 for (int i = 0; i < graphs.size(); i++) {
                     GraphInput g = graphs.get(i);
                     float[] preds = predictor.predict(g);
@@ -115,9 +113,16 @@ public class Main {
         }
     }
 
-    // -----------------------------
-    // CSV parsing and candidate edge generation
-    // -----------------------------
+    /**
+     * Load graphs from CSV file and generate candidate edges.
+     *
+     * @param csvFile CSV file path containing cluster data
+     * @param maxEvents Maximum number of events to load
+     * @param avgWireDiffMax ΔSL maximum difference table
+     * @param bidirectional Whether to generate bidirectional edges
+     * @return List of GraphInput objects representing events
+     * @throws IOException if CSV reading fails
+     */
     private static List<GraphInput> loadGraphs(String csvFile, int maxEvents, float[][] avgWireDiffMax, boolean bidirectional) throws IOException {
         List<GraphInput> graphs = new ArrayList<>();
 
@@ -146,13 +151,6 @@ public class Main {
                     superlayers.clear();
                 }
 
-                // --- 改动 2：节点特征包括 slope ---
-                // Node feature: [avgWire_norm, superlayer_norm, slope]
-                float[] feat = new float[3];
-                feat[0] = avgWire;
-                feat[1] = slope; // 不归一化
-                feat[2] = superlayer;
-
                 avgWireList.add(avgWire);
                 slopeList.add(slope);
                 superlayers.add(superlayer);
@@ -166,6 +164,16 @@ public class Main {
         return graphs;
     }
 
+    /**
+     * Generate candidate edges and edge attributes for a single event.
+     *
+     * @param avgWireList List of avgWire values for nodes
+     * @param slopeList List of slope values for nodes
+     * @param superlayers List of superlayer indices for nodes
+     * @param avgWireDiffMax ΔSL maximum difference table
+     * @param bidirectional Whether to generate bidirectional edges
+     * @return GraphInput object containing node features, edge indices, and edge attributes
+     */
     private static GraphInput generateCandidateEdges(
             List<Float> avgWireList,
             List<Float> slopeList,
@@ -177,15 +185,15 @@ public class Main {
         float avgWireRange = 112.0f;
         float superlayerRange = 6.0f;
 
-        // 构建节点特征
+        // Build node features
         float[][] x = new float[n][3];
         for (int i = 0; i < n; i++) {
-            x[i][0] = avgWireList.get(i) / avgWireRange;   // avgWire_norm
+            x[i][0] = avgWireList.get(i) / avgWireRange;   // avgWire normalized
             x[i][1] = slopeList.get(i);                    // slope
-            x[i][2] = superlayers.get(i) / superlayerRange; // superlayer_norm
+            x[i][2] = superlayers.get(i) / superlayerRange; // superlayer normalized
         }
 
-        // --- 改动 3：扩展 ΔSL 判断逻辑 ---
+        // Generate candidate edges
         List<long[]> edges = new ArrayList<>();
         List<float[]> edgeAttrList = new ArrayList<>();
         for (int i = 0; i < n; i++) {
