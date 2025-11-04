@@ -98,7 +98,7 @@ class Plotter:
 
         plt.xlabel("Superlayer")
         plt.ylabel("avgWire")
-        plt.ylim(0, 120)
+        #plt.ylim(0, 120)
         plt.title(title)
         plt.xticks(np.arange(1, 7))
         plt.grid(True)
@@ -141,7 +141,7 @@ class Plotter:
 
         plt.xlabel("Superlayer")
         plt.ylabel("avgWire")
-        plt.ylim(0, 120)
+        #plt.ylim(0, 120)
         plt.title(title)
         plt.xticks(np.arange(1, 7))
         plt.legend()
